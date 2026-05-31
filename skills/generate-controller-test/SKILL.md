@@ -195,20 +195,56 @@ public function test_○○の場合に△△する(): void
 
 ---
 
-## Step 5: 実行して確認
+## Step 5: 実行 → SQL観測 → アサーション改良
+
+書いたら終わりではなく、**実SQLを観測してアサーション抜けを潰す**ところまでが1セット。
+
+### 5-1. 実行
 
 ```bash
 php artisan test --filter=XxxControllerTest
-# 実行コマンドはプロジェクトの環境に合わせる（Docker 等）。project-specifics.md を参照。
+# 実行コマンドはプロジェクト環境に合わせる。project-specifics.md を参照。
 ```
 
-失敗した場合の対処:
+| エラー | 対処 |
+|---|---|
+| `assertDatabaseHas` 失敗 | `dd(Model::find($id)->toArray())` で実値確認 |
+| `Queue::assertPushed` 失敗 | Factory セットアップ条件を見直す |
+| 422 が返らない | `rules()` と NG 値のズレを確認 |
 
-| エラー | 原因 | 対処 |
-|---|---|---|
-| `assertDatabaseHas` 失敗 | 期待値とDB実値がずれている | `dd(Model::find($id)->toArray())` で実値を確認 |
-| `Queue::assertPushed` 失敗 | Job が dispatch されていない、または別の分岐に入っている | Factory のセットアップ条件を見直す |
-| 422 が返らない | バリデーションルールと NG 値がズレている | `rules()` を再確認 |
+### 5-2. SQL観測（一時的）
+
+`tests/Support/ListensForSqlQueries.php`（雛形は `examples/ListensForSqlQueries.php`）を **一時的に** use し、成功系テストで発行 SQL を可視化する。
+
+```php
+use Tests\Support\ListensForSqlQueries; // 一時追加
+
+protected function setUp(): void
+{
+    parent::setUp();
+    Queue::fake();
+    $this->startSqlListener();
+}
+
+// 各テストの末尾に一時追加
+dump(array_filter($this->capturedQueries(), fn (array $q): bool
+    => (bool) preg_match('/^\s*(insert|update|delete)\b/i', $q['sql'])));
+```
+
+### 5-3. 観測SQLとアサーションを突き合わせる
+
+dump された INSERT / UPDATE / DELETE を1本ずつ確認し、不足を埋める:
+
+- UPDATE のカラム集合が `assertDatabaseHas` の期待値より広い → 抜けカラムを追加
+- 想定外の INSERT がある → `assertDatabaseHas` を追加（または実装側のバグを疑う）
+- DELETE が走っている → `assertDatabaseMissing` を追加
+- 複数行への UPDATE → `assertDatabaseCount` または ID 別に `assertDatabaseHas`
+
+**判断基準:** Step 3 で洗い出した DB 変化と実発行 DML が一致しない場合、テストかコードを必ず直す。
+
+### 5-4. 観測コードを撤去して再実行
+
+`dump()` / `use ListensForSqlQueries` / `startSqlListener()` を削除し、再度テストを流して緑のまま終わることを確認する。**最終成果物に観測コードは残さない。**
 
 ---
 
